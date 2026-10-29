@@ -11,7 +11,7 @@ const float COLOR_SLOT_PITCH_CM = 7.0f;
 // ให้ถือว่าเป็น WHITE (พื้นสนาม). ช่องห่าง 7 ซม. จึงยังไม่ทับกัน.
 const float COLOR_SLOT_HALF_WINDOW_CM = 2.5f;
 const uint8_t COLOR_SLOT_MIN_COLOR_VOTES = 3;
-const uint16_t COLOR_SLOT_BLACK_MIN_CLEAR = 80;
+const float COLOR_PASS_WHITE_REFERENCE_END_CM = 5.5f;
 String colorPassLines[COLOR_PASS_MAX_LINES];
 uint8_t colorPassCount = 0;
 
@@ -33,6 +33,17 @@ static bool colorPassWhiteIsFirst = true;
 static bool colorPassSlotMode = false;
 static uint8_t colorPassSlotVotes[COLOR_PASS_MAX_LINES][COLOR_PASS_MAX_LINES] = {};
 static uint16_t colorPassSlotMinClear[COLOR_PASS_MAX_LINES] = {};
+static uint32_t colorPassWhiteClearSum = 0;
+static uint8_t colorPassWhiteClearSamples = 0;
+
+static uint16_t color_pass_black_clear_threshold() {
+  // ระหว่างเริ่มต้นยังไม่มีพื้นขาวอ้างอิง ให้ใช้ค่าปลอดภัยเดิม.
+  if (colorPassWhiteClearSamples == 0) return 90;
+  const uint16_t whiteClear = colorPassWhiteClearSum / colorPassWhiteClearSamples;
+  // BLACK ต้องมืดกว่าพื้นขาวอย่างชัดเจน; ปรับตามแสงของรอบนั้นเอง.
+  const uint16_t threshold = static_cast<uint16_t>(whiteClear * 0.55f);
+  return threshold < 70 ? 70 : threshold;
+}
 
 static bool isTrackColor(const String& color) {
   return color == "RED" || color == "YELLOW" ||
@@ -92,7 +103,7 @@ static void color_pass_finish_slots() {
     // BLACK อาจอ่านได้ไม่ครบ 3 ครั้งขณะวิ่ง แต่ clear ต่ำกว่าพื้นขาวชัดเจน.
     // ตัวอย่างสนามจริง: WHITE minClear ~294, BLACK minClear 47.
     if (colorPassLines[slot] == "WHITE" &&
-        colorPassSlotMinClear[slot] <= COLOR_SLOT_BLACK_MIN_CLEAR) {
+        colorPassSlotMinClear[slot] <= color_pass_black_clear_threshold()) {
       colorPassLines[slot] = "BLACK";
     }
   }
@@ -238,6 +249,8 @@ void color_pass_reset() {
   colorPassLastSavedCm = -1000.0f;
   colorPassSlotMode = false;
   memset(colorPassSlotVotes, 0, sizeof(colorPassSlotVotes));
+  colorPassWhiteClearSum = 0;
+  colorPassWhiteClearSamples = 0;
   for (uint8_t slot = 0; slot < COLOR_PASS_MAX_LINES; ++slot) {
     colorPassSlotMinClear[slot] = 0xFFFF;
   }
@@ -256,6 +269,13 @@ void color_pass_scan(float travelledCm) {
     }
     return;
   }
+
+  // หุ่นเริ่มก่อนชุดสี 5 ซม. ช่วงนี้จึงเป็นพื้นขาวสำหรับอ้างอิงแสงรอบปัจจุบัน.
+  if (travelledCm <= COLOR_PASS_WHITE_REFERENCE_END_CM &&
+      colorPassWhiteClearSamples < 255) {
+    colorPassWhiteClearSum += tcs0.c;
+    ++colorPassWhiteClearSamples;
+  }
   String color = tcs0.getColor();
 
   // สีแดงจริงของสนามมี R เด่นกว่า G/B ชัดเจน; กัน fallback สลับ RED เป็น YELLOW.
@@ -268,14 +288,14 @@ void color_pass_scan(float travelledCm) {
   // แนวคิดเดียวกับโค้ดอาจารย์: ดู clear เพื่อจับ BLACK. ในการตั้งค่านี้
   // ดำจริงที่วิ่งผ่านมี clear แกว่งได้ถึงราว 79 (ไม่ใช่ >5000).
   // ทำเฉพาะ UNKNOWN จึงไม่เปลี่ยน GREEN/BLUE ที่จำแนกได้แล้ว.
-  if (color == "UNKNOWN" && tcs0.c <= 90) {
+  if (color == "UNKNOWN" && tcs0.c <= color_pass_black_clear_threshold()) {
     color = "BLACK";
     Serial.print(F("Force BLACK by clear="));
     Serial.println(tcs0.c);
   }
 
   // BLACK จาก fallback ที่สว่างเกินไปคือการสับสนกับ BLUE; ข้ามมันไป.
-  if (color == "BLACK" && tcs0.c >= 90) return;
+  if (color == "BLACK" && tcs0.c >= color_pass_black_clear_threshold()) return;
 
   // เก็บคะแนนสีเฉพาะในหน้าต่างของทั้ง 6 ตำแหน่ง จึงไม่สนว่าขาวอยู่ต้น/ท้าย
   // และพื้นขาวระหว่างแถบจะไม่ไปกินช่องอื่น.
