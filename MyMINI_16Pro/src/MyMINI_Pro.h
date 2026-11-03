@@ -9,10 +9,12 @@
 #include "LineFollower.h"
 #include "GyroModel.h"
 
-// Call before robot_begin(). BNO055 at 0x29 uses Wire (GP4/GP5).
+// Call before robot_begin(). BNO055 uses Wire (GP4/GP5), address 0x29 by
+// default. Select 0x28 or 0x29 with set_bno055_address() before startup.
 // BNO085 at 0x4B defaults to Wire1 (GP26/GP27). Pass Wire as the third
 // argument when the BNO085 is wired to GP4/GP5 instead.
 // yawSign is +1 or -1 for BNO085, to match the robot's turn convention.
+bool set_bno055_address(uint8_t address);
 bool select_gyro(GyroModel model, int8_t yawSign = 1,
                  TwoWire& bno085Wire = Wire1);
 GyroModel selected_gyro();
@@ -54,6 +56,12 @@ bool gyro_reset();
 bool gyro_set();
 // Compatibility wrapper around gyro_reset(); returns real gyro readiness.
 bool gyro_recover();
+// BNO055 gyro-rate offset: keep robot still. true collects new samples and
+// verifies EEPROM; false loads existing offsets or calibrates if none exist.
+// Returns false on unavailable gyro, moving robot, or EEPROM failure.
+bool gyro_calibrate(bool forceNew = true);
+// True only when a physical BNO055 has an offset loaded/collected.
+bool gyro_offset_calibrated();
 // Reports BNO055 fusion calibration levels (0..3); false for BNO085.
 bool gyro_calibration_status(uint8_t& system, uint8_t& gyro,
                              uint8_t& accel, uint8_t& mag);
@@ -104,6 +112,9 @@ void read_rowSensor();
 // robot_begin() returns ADC_VALUE_INVALID, never a fake zero.
 constexpr int32_t ADC_VALUE_INVALID = INT32_MIN;
 int32_t readADC_F(uint8_t channel);
+// No-argument overload: ADS1115 AIN3/AUX raw signed ADC count (no calibration).
+// Returns ADC_VALUE_INVALID before robot_begin() or on an I2C/read failure.
+int32_t readADC_F();
 int32_t minADC_F(uint8_t channel);
 int32_t maxADC_F(uint8_t channel);
 int32_t readADC_B(uint8_t channel);

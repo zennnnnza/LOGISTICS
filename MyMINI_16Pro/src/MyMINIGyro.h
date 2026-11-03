@@ -4,6 +4,7 @@
 #include <my_BNO085.h>
 #include <math.h>
 #include "GyroModel.h"
+#include "RobotConfig.h"
 
 // Keep the motion controller's existing BNO055-shaped interface while the
 // selected sensor supplies heading and rate readings.
@@ -38,7 +39,12 @@ public:
 
   bool begin(uint8_t address, TwoWire& wire) {
     started_ = model_ == GyroModel::BNO055
-        ? bno055_.begin(address, wire) : bno085_.begin();
+        ? bno055_.begin(address, wire, -1, -1, MyMINIConfig::I2C_CLOCK_HZ) : bno085_.begin();
+    if (started_ && model_ == GyroModel::BNO055) {
+      const bool loaded = bno055_.loadStoredGyroCalibration();
+      Serial.println(loaded ? F("BNO055 gyro offset loaded")
+                            : F("BNO055 gyro offset unavailable"));
+    }
     error_ = started_ ? BNO055UpdateError::None
                       : BNO055UpdateError::ReadFailed;
     return started_;
@@ -100,6 +106,9 @@ public:
   bool calibrate(uint8_t buzzerPin, bool forceNew) {
     return model_ == GyroModel::BNO055 &&
            bno055_.calibrate(buzzerPin, forceNew);
+  }
+  bool gyroOffsetReady() const {
+    return model_ == GyroModel::BNO055 && bno055_.gyroOffsetReady();
   }
   bool calibrationStatus(BNO055CalibrationStatus& status) {
     return model_ == GyroModel::BNO055 &&

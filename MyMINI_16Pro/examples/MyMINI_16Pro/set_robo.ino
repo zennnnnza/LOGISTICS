@@ -7,6 +7,11 @@ void robot_setup()
     const uint8_t smoothingDivisor = 4;     // กรองข้ามเฟรม: 1=ปิด, 2/4/8=มากขึ้น
     Serial.begin(115200);                   // ความเร็ว Serial Monitor (baud)
     select_motor_driver(MotorDriverType::DRV8874);  // เลือกไดรเวอร์ก่อนเริ่มหุ่นยนต์
+    const uint8_t bno055Address = 0x29;     // เลือก 0x29 หรือ 0x28 ตามขา ADDR ของ BNO055
+    if (!set_bno055_address(bno055Address)) {
+      Serial.println(F("BNO055 address must be 0x28 or 0x29 before robot_begin()"));
+      for (;;) delay(1000);
+    }
     select_gyro(GyroModel::BNO055);         // เลือก BNO055 (เดิม)
     //select_gyro(GyroModel::BNO085, -1, Wire); // 0x4B, GP4/GP5; ใช้ Wire1 เมื่อ BNO085 ต่อ GP26/GP27
     robot_begin();                          // เริ่มอุปกรณ์ โหลดคาลิเบรต และรีเซตมุมไจโร
@@ -25,23 +30,21 @@ void robot_setup()
     set_servo_pulse_range(18, 500, 2500); // GP18: เซอร์โวช่อง 1, คำสั่ง 0-180°
     set_servo_pulse_range(22, 500, 2500); // GP22: เซอร์โวช่อง 2, คำสั่ง 0-180°
     set_servo_pulse_range(28, 500, 2500); // GP28: เซอร์โวช่อง 3, คำสั่ง 0-180°
-    set_servo_pulse_range(0, 500, 2500);  // GP0: ช่องเสริม เมื่อไม่ได้ใช้ UART0 TX
-    set_servo_pulse_range(1, 500, 2500);  // GP1: ช่องเสริม เมื่อไม่ได้ใช้ UART0 RX
     set_line_distance_scale(1.75f);     // ชดเชยระยะ: สั่ง 20 ซม. วิ่งจริง 35 ซม. → 35/20
     set_turn_overshoot(10);             // fl/fr วิ่งต่อหลังข้ามเส้น 20 ms ก่อนเบรก
-    set_turn_touch_brake_ms(10);        // เวลาเบรกสวนก่อนหมุน fl/fr และ turn_gyro (ms)
+    set_turn_touch_brake_ms(20);        // เวลาเบรกสวนก่อนหมุน fl/fr และ turn_gyro (ms)
     set_turn_timeout(3000);            // เวลาสูงสุดของ turn/turn_gyro (ms)
     set_turn_approach_kp(0.150f);       // Kp ช่วงตามเส้นเข้าหาจุดหมุน
     set_turn_line_search(80, 100);     // turn(): หมุนเร็ว 100 ms แล้วจำกัดสปีดค้นหาเส้นที่ 60
 
     set_line_ramp_start_speed(5);       // สปีดเริ่ม f_line/b_line เมื่อสปีดที่สั่งตั้งแต่ 40
-    set_line_ramp_ms(100);              // เวลาไล่ถึงสปีดที่สั่ง (ms); 0=ไม่ไล่สปีด
-    set_line_decel_ramp_cm(100);        // ชะลอก่อนครบระยะ 1.00 ซม.; 100=1.00 ซม., 0=ปิด
+    set_line_ramp_ms(400);              // เวลาไล่ถึงสปีดที่สั่ง (ms); 0=ไม่ไล่สปีด
+    set_line_decel_ramp_cm(200);        // ชะลอก่อนครบระยะ 1.00 ซม.; 100=1.00 ซม., 0=ปิด
     set_line_pid_tuning(0.0155f);       // Kd ของ f_line/b_line; Kp ใช้ค่าที่ส่งในคำสั่ง
     set_gyro_kd(0.00850f, 0.0125f);    // Kd ของ fw_gyro, bw_gyro ตามลำดับ
     set_rotate_fallback(300, 550, 50); // ใช้เฉพาะ rotate_spin/pivot เมื่อ gyro ใช้ไม่ได้; turn_gyro จะหยุดพร้อมแจ้งข้อผิดพลาด
     set_turn_approach(25, 25, 15);     // สปีดเข้าหาเส้นหลังจบด้วยเซนเซอร์/ระยะทาง, กำลังเบรกสวน
-    set_turn_center_brake(25, 10, 20, 60);  // tcl/tcr: เบรกสวนหลังเดินหน้า 25/10 ms, หลังถอย 20/60 ms
+    set_turn_center_brake(25, 20, 20, 40);  // tcl/tcr: เบรกสวนหลังเดินหน้า 25/10 ms, หลังถอย 20/60 ms
 
     // กำลังล้อขณะหมุน: (ซ้าย, ขวา) เป็นร้อยละของสปีดที่สั่ง; ค่าลบคือถอย
     set_turn_motor(TurnMode::fl, -15, 100);   // fl: ซ้ายถอยเบา ขวาเดินหน้า

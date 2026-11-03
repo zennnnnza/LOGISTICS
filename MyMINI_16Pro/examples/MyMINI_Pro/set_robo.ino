@@ -25,8 +25,6 @@ void robot_setup()
     set_servo_pulse_range(18, 500, 2500); // GP18: เซอร์โวช่อง 1, คำสั่ง 0-180°
     set_servo_pulse_range(22, 500, 2500); // GP22: เซอร์โวช่อง 2, คำสั่ง 0-180°
     set_servo_pulse_range(28, 500, 2500); // GP28: เซอร์โวช่อง 3, คำสั่ง 0-180°
-    set_servo_pulse_range(0, 500, 2500);  // GP0: ช่องเสริม เมื่อไม่ได้ใช้ UART0 TX
-    set_servo_pulse_range(1, 500, 2500);  // GP1: ช่องเสริม เมื่อไม่ได้ใช้ UART0 RX
     set_line_distance_scale(1.75f);     // ชดเชยระยะ: สั่ง 20 ซม. วิ่งจริง 35 ซม. → 35/20
     set_turn_overshoot(10);             // fl/fr วิ่งต่อหลังข้ามเส้น 20 ms ก่อนเบรก
     set_turn_touch_brake_ms(10);        // เวลาเบรกสวนก่อนหมุน fl/fr และ turn_gyro (ms)

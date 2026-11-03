@@ -62,7 +62,7 @@ constexpr float SENSOR_HEIGHT_MM = 5.0f;
 constexpr float TRACK_LINE_WIDTH_MM = 20.0f;
 
 constexpr uint32_t SERIAL_BAUD = 115200;
-constexpr uint32_t I2C_CLOCK_HZ = 400000;
+constexpr uint32_t I2C_CLOCK_HZ = 100000;
 
 constexpr uint16_t MOTOR_COMMAND_MAX = 100;
 constexpr uint16_t MOTOR_DIAGNOSTIC_LIMIT = 30;

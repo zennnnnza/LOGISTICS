@@ -7,14 +7,16 @@ void setup()
       robot_setup();
       set_line_error_monitor(true);   
      // arm_openDown();  
-      arm_closeDown(); 
+      //arm_closeDown(); 
       wait_button();
       // wait_button() has already selected real gyro or estimated heading.
 
       ////----------------------------------------------->>>
       ////----------------------------------------------->>>
 
-        
+        servo(18, 130);
+        delay(1000);
+        servo(18, 60);
 
         
       

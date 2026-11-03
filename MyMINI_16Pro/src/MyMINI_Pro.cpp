@@ -22,7 +22,7 @@ int16_t latestBatteryRaw = 0;
 uint8_t latestBatteryLevel = 0;
 int32_t latestBatteryMillivolts = 0;
 constexpr uint16_t MUX_MIN_CAL_SPAN = 1;
-constexpr uint8_t BNO055_ADDRESS = 0x29;
+uint8_t bno055Address = 0x29;
 constexpr uint8_t BNO085_ADDRESS = 0x4B;
 constexpr uint8_t BNO055_CHIP_ID = 0xA0;
 constexpr uint32_t BNO055_STARTUP_I2C_HZ = 100000;
@@ -522,6 +522,16 @@ void printSetupValues() {
   Serial.println();
 }
 
+// Distinct confirmation for a loaded or newly saved BNO055 rate offset.
+void playGyroCalibrationMelody() {
+  const uint16_t notes[] = {1319, 1760, 2349};
+  for (uint8_t i = 0; i < 3; ++i) {
+    tone(MyMINIConfig::PIN_BUZZER, notes[i], 55);
+    delay(70);
+  }
+  noTone(MyMINIConfig::PIN_BUZZER);
+}
+
 }  // namespace
 
 void wait_button() {
@@ -530,6 +540,7 @@ void wait_button() {
   // Keep it outside the display loop so rotations remain visible while waiting.
   gyro_reset();
   const bool gyroPrepared = gyro_start_ready();
+  if (gyroPrepared && gyro_offset_calibrated()) playGyroCalibrationMelody();
   motor(0, 0);
   uint32_t lastPrintAtMs = millis();
   uint32_t lastBatteryLedUpdateAtMs = lastPrintAtMs;
@@ -658,6 +669,13 @@ int32_t readADC_F(uint8_t channel) {
   return readNormalizedMux(channel, false);
 }
 
+int32_t readADC_F() {
+  if (!sensorApiReady) return ADC_VALUE_INVALID;
+  int16_t raw = 0;
+  return i2cDevices.readAds1115SingleEnded(MyMINIConfig::ADS_CHANNEL_AUX, raw)
+      ? static_cast<int32_t>(raw) : ADC_VALUE_INVALID;
+}
+
 int32_t minADC_F(uint8_t channel) {
   return channel < MyMINIConfig::SENSOR_COUNT
       ? normalizedLimit(static_cast<LineExitSensor>(f0 + channel), false)
@@ -767,6 +785,12 @@ bool gyro_ready() {
   return imuReady;
 }
 
+bool set_bno055_address(uint8_t address) {
+  if (sensorApiReady || (address != 0x28 && address != 0x29)) return false;
+  bno055Address = address;
+  return true;
+}
+
 bool select_gyro(GyroModel model, int8_t yawSign, TwoWire& bno085Wire) {
   if (&bno085Wire != &Wire && &bno085Wire != &Wire1) return false;
   return imu.select(model, yawSign, bno085Wire);
@@ -832,7 +856,7 @@ bool gyro_reset() {
   imu.setOperationBudget(startedMs, GYRO_RESET_BUDGET_MS);
   TwoWire& bus = imu.bus();
   const uint8_t address = imu.model() == GyroModel::BNO055
-      ? BNO055_ADDRESS : BNO085_ADDRESS;
+      ? bno055Address : BNO085_ADDRESS;
   bool busRestarted = false;
   bool verified = false;
 
@@ -871,6 +895,16 @@ bool gyro_reset() {
           isfinite(imu.yawRaw()) && isfinite(imu.gyro('z')) &&
           gyroResetRemaining(startedMs) > 0u;
       if (verified) break;
+    }
+    // BNO055 fusion may establish an absolute heading shortly after NDOF
+    // starts. Rebase only during explicit reset, then require the usual
+    // settled verification; restarting the chip here repeats its startup.
+    if (imuReady && imu.model() == GyroModel::BNO055 &&
+        imu.lastUpdateError() == BNO055UpdateError::ImplausibleHeading &&
+        gyroResetRemaining(startedMs) > 260u && imu.resetAngles()) {
+      Serial.println(F("BNO055: heading changed during startup; verifying again"));
+      delay(min(20u, gyroResetRemaining(startedMs)));
+      continue;
     }
     // BNO085 may need a few reports after begin; allow them before reopening.
     if (imuReady && imu.model() == GyroModel::BNO085) {
@@ -915,6 +949,25 @@ bool gyro_recover() {
   // Compatibility entry point delegates to the one bounded reset workflow.
   gyro_reset();
   return gyro_start_ready();
+}
+
+bool gyro_calibrate(bool forceNew) {
+  if (!sensorApiReady || imu.model() != GyroModel::BNO055) return false;
+  motor(1, 1);
+  if (!gyro_start_ready()) {
+    gyro_reset();
+    if (!gyro_start_ready()) return false;
+  }
+  const bool calibrated = imu.calibrate(MyMINIConfig::PIN_BUZZER, forceNew);
+  // Re-establish a shared motion heading reference even if calibration fails.
+  gyro_reset();
+  const bool success = calibrated && gyro_start_ready() && imu.gyroOffsetReady();
+  if (success) playGyroCalibrationMelody();
+  return success;
+}
+
+bool gyro_offset_calibrated() {
+  return gyro_start_ready() && imu.gyroOffsetReady();
 }
 
 bool gyro_calibration_status(uint8_t& system, uint8_t& gyro,

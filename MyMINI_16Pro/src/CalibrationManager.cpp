@@ -25,7 +25,8 @@ constexpr uint32_t COMPLETE_TONE_MS = 250;
 constexpr uint32_t COMPLETE_TONE_GAP_MS = 150;
 constexpr uint32_t WAIT_TONE_MS = 120;
 constexpr uint32_t WAIT_TONE_GAP_MS = 100;
-constexpr uint16_t CALIBRATION_EEPROM_ADDRESS = 0x0000;
+constexpr uint16_t LEGACY_CALIBRATION_EEPROM_ADDRESS = 0x0000;
+constexpr uint16_t CALIBRATION_EEPROM_ADDRESS = 0x0200; // 150 bytes: 0x0200-0x0295
 constexpr uint32_t CALIBRATION_MAGIC = 0x4D4D5031UL;
 constexpr uint16_t CALIBRATION_VERSION = 1;
 constexpr uint8_t VALID_FRONT = 0x01;
@@ -104,26 +105,43 @@ void CalibrationManager::update(uint32_t nowMs) {
 bool CalibrationManager::loadCalibration() {
   CalibrationData loaded = {};
   bool readSucceeded = false;
-  for (uint8_t attempt = 0; attempt < EEPROM_READ_ATTEMPTS; ++attempt) {
-    if (i2c_.readEepromBlock(CALIBRATION_EEPROM_ADDRESS,
-                             reinterpret_cast<uint8_t*>(&loaded),
-                             sizeof(loaded))) {
-      readSucceeded = true;
-      if (loaded.magic == CALIBRATION_MAGIC &&
-          loaded.version == CALIBRATION_VERSION &&
-          loaded.size == sizeof(CalibrationData) &&
-          (loaded.validMask & static_cast<uint8_t>(~VALID_MASK_ALL)) == 0 &&
-          loaded.reserved[0] == 0 && loaded.reserved[1] == 0 &&
-          loaded.reserved[2] == 0 &&
-          loaded.crc16 == crc16_(reinterpret_cast<const uint8_t*>(&loaded),
-                                 offsetof(CalibrationData, crc16))) {
-        data_ = loaded;
-        loadStatus_ = LoadStatus::Loaded;
-        return true;
+  const uint16_t addresses[] = {
+      CALIBRATION_EEPROM_ADDRESS, LEGACY_CALIBRATION_EEPROM_ADDRESS};
+
+  for (uint8_t slot = 0; slot < 2; ++slot) {
+    bool slotReadSucceeded = false;
+    for (uint8_t attempt = 0; attempt < EEPROM_READ_ATTEMPTS; ++attempt) {
+      if (i2c_.readEepromBlock(addresses[slot],
+                               reinterpret_cast<uint8_t*>(&loaded),
+                               sizeof(loaded))) {
+        slotReadSucceeded = true;
+        readSucceeded = true;
+        if (loaded.magic == CALIBRATION_MAGIC &&
+            loaded.version == CALIBRATION_VERSION &&
+            loaded.size == sizeof(CalibrationData) &&
+            (loaded.validMask & static_cast<uint8_t>(~VALID_MASK_ALL)) == 0 &&
+            loaded.reserved[0] == 0 && loaded.reserved[1] == 0 &&
+            loaded.reserved[2] == 0 &&
+            loaded.crc16 == crc16_(reinterpret_cast<const uint8_t*>(&loaded),
+                                   offsetof(CalibrationData, crc16))) {
+          data_ = loaded;
+          loadStatus_ = LoadStatus::Loaded;
+          if (slot == 1) {
+            if (saveCalibration()) {
+              Serial.println(F("Legacy calibration migrated to 0x0200"));
+            } else {
+              Serial.println(F("Legacy calibration migration failed; values kept in RAM"));
+            }
+          }
+          return true;
+        }
       }
+      if (attempt + 1 < EEPROM_READ_ATTEMPTS) delay(10);
     }
-    if (attempt + 1 < EEPROM_READ_ATTEMPTS) delay(10);
+    // A failed new-slot read must not replace newer data with stale legacy data.
+    if (slot == 0 && !slotReadSucceeded) break;
   }
+
   memset(&data_, 0, sizeof(data_));
   loadStatus_ = readSucceeded ? LoadStatus::InvalidData
                               : LoadStatus::ReadFailed;

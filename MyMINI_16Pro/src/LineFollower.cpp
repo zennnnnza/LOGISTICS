@@ -14,11 +14,6 @@
 #include "TurnGyroTarget.h"
 
 int positoin_error = 50;
-static LineDistanceProgressCallback lineDistanceProgressCallback = nullptr;
-
-void set_line_distance_progress_callback(LineDistanceProgressCallback callback) {
-  lineDistanceProgressCallback = callback;
-}
 
 // -----------------------------------------------------------------------------
 // Constants, internal types, sensor helpers, PID, turn, gyro, and rotate helpers
@@ -160,7 +155,7 @@ LineDistancePidHandoff lastLineDistancePidHandoff;
 bool lineDiagnosticsEnabled = false;
 bool lineErrorMonitorEnabled = false;
 constexpr uint16_t LINE_FOLLOW_DEFAULT_RAMP_MS = 200;
-constexpr int LINE_FOLLOW_NO_RAMP_BELOW_SPEED = 40;
+constexpr int LINE_FOLLOW_NO_RAMP_BELOW_SPEED = 30;
 constexpr float LINE_DISTANCE_MIN_BATTERY_VOLTS = 11.0f;
 constexpr float LINE_DISTANCE_REFERENCE_BATTERY_VOLTS = 12.4f;
 constexpr uint32_t LINE_DISTANCE_BATTERY_SAMPLE_US = 100000UL;
@@ -2122,7 +2117,7 @@ void resetTurnExit(TurnExitState& state) {
 
 bool updateTurnExit(TurnExitState& state, bool white, bool black,
                     bool hasPredecessor, bool predecessorBlack,
-                    bool pairBlack = false) {
+                    bool pairBlack = false, bool pairOnly = false) {
   if (!state.exitArmed) {
     state.consecutiveWhiteSamples = white
         ? static_cast<uint8_t>(state.consecutiveWhiteSamples + 1u)
@@ -2142,6 +2137,7 @@ bool updateTurnExit(TurnExitState& state, bool white, bool black,
       static_cast<uint8_t>(state.pairBlackHistory[1]) +
       static_cast<uint8_t>(state.pairBlackHistory[2]);
   if (pairBlackSamples >= 2u) return true;
+  if (pairOnly) return false;
 
   if (hasPredecessor && !state.predecessorConfirmed) {
     // The leading sensor may already be black when the exit pair clears.
@@ -2358,7 +2354,9 @@ void runLine(int sl, int sr, float kp, bool distanceMode,
   if (requireBothExitSensors &&
       (!sensorMode || exitSensor == secondExitSensor ||
        !(isFrontExit && secondExitSensor >= f0 && secondExitSensor <= f15) &&
-       !(isRearExit && secondExitSensor >= b0 && secondExitSensor <= b15))) {
+       !(isRearExit && secondExitSensor >= b0 && secondExitSensor <= b15) &&
+       !((isCenterLeftExit || isCenterRightExit) &&
+         (secondExitSensor == cl || secondExitSensor == cr)))) {
     stopLineWithError(reverseDirection, F("INVALID_SENSOR_PAIR"), stopPull);
     return;
   }
@@ -2370,7 +2368,7 @@ void runLine(int sl, int sr, float kp, bool distanceMode,
   uint8_t centerChannel = 0;
   // Every sensor-ended f_line counts black from the first fresh frame,
   // including after any turn. Only b_line retains white-release arming.
-  bool armed = requireBothExitSensors || (!reverseDirection && sensorMode);
+  bool armed = !reverseDirection && sensorMode;
   uint8_t consecutiveWhiteSamples = 0;
   bool pairBlackHistory[3] = {false, false, false};
   uint8_t pairHistoryIndex = 0;
@@ -2537,6 +2535,7 @@ void runLine(int sl, int sr, float kp, bool distanceMode,
       rememberForwardDistancePid(kp, lastDrivenMotionFactor);
       recordLineNormalExit(LastMotionType::fLine, LineExitSource::distance,
                            completedDirection, stopPull);
+      previousLineCommandContinuous = stopPull == 0u;
       stopAfterLineComplete(sl, sr, stopPull, false);
       printLineReason(false, F("DISTANCE_SIDE_LINE"), stopPull);
       return;
@@ -2560,6 +2559,18 @@ void runLine(int sl, int sr, float kp, bool distanceMode,
         }
         exitWhite = centerValue >= LINE_EXIT_WHITE_RELEASE;
         exitBlackSample = centerBlack;
+        if (requireBothExitSensors) {
+          uint16_t secondCenterValue = 0;
+          bool secondCenterBlack = false;
+          const uint8_t secondCenterChannel = secondExitSensor == cl ? 0u : 1u;
+          if (!normalizedCenter(secondCenterChannel, secondCenterValue,
+                                &secondCenterBlack)) {
+            stopLineWithError(reverseDirection, F("INVALID_SENSOR"), stopPull);
+            return;
+          }
+          exitWhite = exitWhite && secondCenterValue >= LINE_EXIT_WHITE_RELEASE;
+          exitBlackSample = centerBlack && secondCenterBlack;
+        }
       } else if (rearExit) {
         if (!normalizedRear(pairFirst, rearFirstValue, &pairFirstBlack) ||
             !normalizedRear(pairSecond, rearSecondValue, &pairSecondBlack)) {
@@ -2963,13 +2974,17 @@ void runLine(int sl, int sr, float kp, bool distanceMode,
         recordLineNormalExit(
             reverseDirection ? LastMotionType::bLine : LastMotionType::fLine,
             LineExitSource::distance, completedDirection, stopPull);
+        previousLineCommandContinuous = stopPull == 0u;
         stopAfterLineComplete(sl, sr, stopPull, reverseDirection);
         printLineReason(reverseDirection, F("DISTANCE"), stopPull);
         return;
       }
       const float remainingMm = max(0.0f, targetDistanceMm - estimatedDistanceMm);
-      decelFactor = distanceLineDecelFactor(
-          remainingMm, targetDistanceMm, sl, sr, stopPull);
+      // Continuous distance exits keep full speed up to the handoff.
+      if (stopPull != 0u) {
+        decelFactor = distanceLineDecelFactor(
+            remainingMm, targetDistanceMm, sl, sr, stopPull);
+      }
       // Keep full line-loss recovery steering near the distance target.
       if (!reverseDirection && !forwardLineTracking && !lineFound &&
           kp > 0.95f &&
@@ -3141,9 +3156,6 @@ void runLine(int sl, int sr, float kp, bool distanceMode,
       // travel whenever a sensor frame takes longer than 50 ms.
       estimatedDistanceMm += estimatedLineDistanceStepMm(
           leftCommand, rightCommand, pidDeltaUs, distanceVoltageFactor);
-      if (lineDistanceProgressCallback != nullptr) {
-        lineDistanceProgressCallback(estimatedDistanceMm * 0.1f);
-      }
       if (estimatedDistanceMm >= targetDistanceMm) {
         if (!reverseDirection) {
           rememberForwardDistancePid(kp, lastDrivenMotionFactor);
@@ -3151,6 +3163,7 @@ void runLine(int sl, int sr, float kp, bool distanceMode,
         recordLineNormalExit(
             reverseDirection ? LastMotionType::bLine : LastMotionType::fLine,
             LineExitSource::distance, completedDirection, stopPull);
+        previousLineCommandContinuous = stopPull == 0u;
         stopAfterLineComplete(sl, sr, stopPull, reverseDirection);
         printLineReason(reverseDirection, F("DISTANCE"), stopPull);
         return;
@@ -3594,6 +3607,10 @@ bool set_line_distance_scale(float scale) {
   return true;
 }
 
+float get_line_distance_scale() {
+  return lineDistanceScale;
+}
+
 bool set_line_decel_ramp_cm(int distanceCmTimes100) {
   if (distanceCmTimes100 < 0) return false;
   // One integer unit is 0.01 cm, or 0.1 mm.
@@ -3712,6 +3729,19 @@ void b_line(int sl, int sr, float kp, LineExitSensor exitSensor,
           TravelDirection::backward, continuousEntry);
 }
 
+void b_line(int sl, int sr, float kp, LineExitPair exitSensors,
+             uint8_t stopPull) {
+  ResetLinePositionOnReturn resetPosition;
+  const bool continuousEntry = previousLineCommandContinuous;
+  clearLastFLineState(LastMotionType::bLine);
+  if (sl < 0 || sr < 0 || sl > 100 || sr > 100) {
+    stopLineWithError(true, F("INVALID_ARGUMENT"), stopPull);
+    return;
+  }
+  runLine(sl, sr, kp, false, 0.0f, exitSensors.first, stopPull, true,
+          TravelDirection::backward, continuousEntry, true, exitSensors.second);
+}
+
 void b_line(int sl, int sr, float kp, float distanceCm,
              uint8_t stopPull) {
   ResetLinePositionOnReturn resetPosition;
@@ -3762,7 +3792,7 @@ void fw_gyro(float targetAngle, uint8_t speed, float kp, float distanceCm,
   }
 
   clearLastFLineState(LastMotionType::fLine);
-  const float targetDistanceMm = distanceCm * 10.0f;
+  const float requestedDistanceMm = distanceCm * 10.0f;
   const uint32_t startedAtUs = micros();
   uint32_t previousAtUs = startedAtUs;
   float estimatedDistanceMm = 0.0f;
@@ -3782,6 +3812,11 @@ void fw_gyro(float targetAngle, uint8_t speed, float kp, float distanceCm,
           ? F("GYRO_JUMP") : F("GYRO_READ_FAILED"));
       return;
     }
+
+    // Extend forward travel by 5 cm whenever heading uses wheel estimation.
+    // Re-evaluate after each update to cover a gyro failure during motion.
+    const float targetDistanceMm = requestedDistanceMm +
+        (gyro_estimation_active() ? 50.0f : 0.0f);
 
     const float rawYaw = motion_heading_yaw();
     if (!isfinite(rawYaw)) {
@@ -4130,6 +4165,8 @@ void turn(TurnMode mode, uint8_t speed, LineExitSensor exitSensor,
           uint8_t stopPull) {
   uint8_t modeIndex = 0;
   const bool flFrMode = turnModeUsesTimedApproach(mode);
+  // Central stop channels do not gate approach detection or release.
+  const bool outerPairOnlyApproach = flFrMode && exitSensor >= f6 && exitSensor <= f9;
   const TravelDirection approachDirection = lastLineEndedNormally
       ? lastLineDirection : TravelDirection::forward;
   const LineExitSource previousExitSource = lastLineExitSource;
@@ -4310,17 +4347,19 @@ void turn(TurnMode mode, uint8_t speed, LineExitSensor exitSensor,
         return;
       }
       bool predecessorBlack = false;
-      if (hasTurnPredecessor &&
+      const bool pairOnly = centerTurnMode && (frontTurnExit || rearTurnExit);
+      if (!pairOnly && hasTurnPredecessor &&
           !readTurnPredecessor(exitSensor, turnPredecessorIndex,
                                 predecessorBlack)) {
         motor(1, 1);
         return;
       }
-      // After the exit pair clears, accept either the leading-sensor sequence
-      // or confirmed black on the selected sensor and its inward neighbor.
+      // Center turns require the selected and inward sensors together. Other
+      // turns retain the leading-sensor sequence and pair alternatives.
       if (elapsedTurnMs >= TURN_EXIT_MIN_ROTATION_MS &&
           updateTurnExit(turnExitState, exitWhite, exitBlack,
-                          hasTurnPredecessor, predecessorBlack, exitPairBlack)) {
+                          hasTurnPredecessor, predecessorBlack, exitPairBlack,
+                          pairOnly)) {
         stopAfterTurnComplete(appliedTurnLeftCommand,
                               appliedTurnRightCommand, stopPull);
         return;
@@ -4358,7 +4397,7 @@ void turn(TurnMode mode, uint8_t speed, LineExitSensor exitSensor,
         }
       }
       uint16_t turnSelectedValue = 0;
-      if (confirmedOuterSide != 0u) {
+      if (confirmedOuterSide != 0u && !outerPairOnlyApproach) {
         bool turnSelectedBlack = false;
         if (!readTurnApproachSelected(exitSensor, turnSelectedValue,
                                       turnSelectedBlack)) {
@@ -4378,7 +4417,7 @@ void turn(TurnMode mode, uint8_t speed, LineExitSensor exitSensor,
             ((confirmedOuterSide & 2u) == 0u || rightPairWhite);
       // Match f_line's white release: calibrated white can read around 630-660.
       const bool approachExitWhite = matchedEdgesWhite &&
-          (confirmedOuterSide == 0u ||
+          (outerPairOnlyApproach || confirmedOuterSide == 0u ||
            turnSelectedValue >= LINE_EXIT_WHITE_RELEASE) &&
           selectedExitWhite;
       if (outerLineWasDetected && updateTurnApproachExit(
@@ -4455,6 +4494,26 @@ void turn(TurnMode mode, uint8_t speed, LineExitSensor exitSensor,
       blackStrength[channel] = static_cast<uint16_t>(strength);
       confirmedBlackStrength[channel] = normalized[channel] < 500u
           ? static_cast<uint16_t>(1000u - normalized[channel]) : 0u;
+    }
+
+    if (outerPairOnlyApproach && phase == TurnPhase::SearchOuter) {
+      const bool leftConfirmed = updateTurnApproachExit(
+          blackByChannel[0] && blackByChannel[1],
+          leftOuterBlackHistory, leftOuterBlackHistoryIndex);
+      const bool rightConfirmed = updateTurnApproachExit(
+          blackByChannel[14] && blackByChannel[15],
+          rightOuterBlackHistory, rightOuterBlackHistoryIndex);
+      if (leftConfirmed || rightConfirmed) {
+        confirmedOuterSide = (leftConfirmed ? 1u : 0u) |
+            (rightConfirmed ? 2u : 0u);
+        outerLineWasDetected = true;
+        phase = TurnPhase::CrossOuter;
+        phaseStartedAtMs = nowMs;
+        outerWhiteHistory[0] = outerWhiteHistory[1] = outerWhiteHistory[2] = false;
+        outerWhiteHistoryIndex = 0;
+        motorMotion(approachMotorCommand, approachMotorCommand);
+        continue;
+      }
     }
 
     if (centerTurnMode && phase == TurnPhase::ApproachExit &&
@@ -4620,7 +4679,7 @@ void turn(TurnMode mode, uint8_t speed, LineExitSensor exitSensor,
       }
     }
 
-    if (phase == TurnPhase::SearchOuter) {
+    if (phase == TurnPhase::SearchOuter && !outerPairOnlyApproach) {
       uint16_t turnSelectedValue = 0;
       bool turnSelectedBlack = false;
       if (!readTurnApproachSelected(exitSensor, turnSelectedValue,
